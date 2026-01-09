@@ -11,13 +11,16 @@ from typing import List, Dict, Any, Tuple
 import requests
 from bs4 import BeautifulSoup
 
+# Charts to monitor
 FREE_URL = "https://apps.apple.com/us/iphone/charts/36?chart=top-free"
 PAID_URL = "https://apps.apple.com/us/iphone/charts/36?chart=top-paid"
 
-FREE_STATE_PATH = Path("state/top3_free.json")
-PAID_STATE_PATH = Path("state/top1_paid.json")
+# State files
+FREE_STATE_PATH = Path("state/top3_free.json")   # stores [{"rank":1,"name":"..."}, ...] for ranks 1-3
+PAID_STATE_PATH = Path("state/top1_paid.json")   # stores [{"rank":1,"name":"..."}]
+HEARTBEAT_STATE_PATH = Path("state/last_heartbeat.json")  # stores {"ts":"ISO8601"}
 
-HEARTBEAT_STATE_PATH = Path("state/last_heartbeat.json")
+# Heartbeat cadence
 HEARTBEAT_INTERVAL = timedelta(hours=4)
 
 HEADERS = {
@@ -53,10 +56,11 @@ def extract_app_name_from_anchor(a) -> str | None:
     text = a.get_text(" ", strip=True)
     text = re.sub(r"\s+", " ", text).strip()
 
+    # Must start with rank
     if not re.match(r"^\d+\s", text):
         return None
 
-    # Some variants include trailing "View"
+    # Remove optional trailing "View"
     text = re.sub(r"\s+View$", "", text, flags=re.IGNORECASE).strip()
 
     m = re.match(r"^(\d+)\s+(.+)$", text)
@@ -212,7 +216,7 @@ def main() -> int:
     prev_free = load_json_list(FREE_STATE_PATH)
     prev_paid = load_json_list(PAID_STATE_PATH)
 
-    # Save current states (commit step will only commit if files changed)
+    # Save current states (workflow will commit only if changed)
     save_json_list(FREE_STATE_PATH, free_top3)
     save_json_list(PAID_STATE_PATH, paid_top1)
 
@@ -224,6 +228,7 @@ def main() -> int:
     # ---- Heartbeat (once every 4 hours) ----
     now = datetime.utcnow()
     last_heartbeat = load_last_heartbeat()
+
     if last_heartbeat is None or now - last_heartbeat >= HEARTBEAT_INTERVAL:
         heartbeat = (
             "✅ App Store Charts (US iPhone) health check\n\n"
