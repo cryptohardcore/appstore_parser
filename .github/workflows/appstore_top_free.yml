@@ -39,7 +39,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if git status --porcelain | grep -q "state/top3.json"; then
+          if git status --porcelain | grep -q "^.. state/"; then
             git add state/top3.json
             git commit -m "Update App Store top3 state"
             git push
