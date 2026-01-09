@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import json
 import os
 import re
@@ -21,11 +22,18 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# ------------------------
+# Fetch page
+# ------------------------
 def fetch_html(url: str) -> str:
     r = requests.get(url, headers=HEADERS, timeout=30)
     r.raise_for_status()
     return r.text
 
+
+# ------------------------
+# Parse helpers
+# ------------------------
 def extract_app_name_from_anchor(a) -> str | None:
     title_el = a.find(["h3", "h2"])
     if title_el:
@@ -34,6 +42,7 @@ def extract_app_name_from_anchor(a) -> str | None:
 
     text = a.get_text(" ", strip=True)
     text = re.sub(r"\s+", " ", text).strip()
+
     if not text.lower().endswith(" view"):
         return None
 
@@ -46,13 +55,16 @@ def extract_app_name_from_anchor(a) -> str | None:
     words = rest.split()
     if not words:
         return None
+
     return " ".join(words[:6]).strip()
+
 
 def parse_top_free_top3(html: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html, "html.parser")
     anchors = soup.find_all("a", href=True)
 
     candidates: List[Tuple[int, str]] = []
+
     for a in anchors:
         href = a.get("href", "")
         if "/app/" not in href or "id" not in href:
@@ -60,16 +72,16 @@ def parse_top_free_top3(html: str) -> List[Dict[str, Any]]:
 
         text = a.get_text(" ", strip=True)
         text = re.sub(r"\s+", " ", text).strip()
+
         m_rank = re.match(r"^(\d+)\s", text)
         if not m_rank:
             continue
-        rank = int(m_rank.group(1))
 
+        rank = int(m_rank.group(1))
         name = extract_app_name_from_anchor(a)
         if not name:
             continue
 
-        name = re.sub(r"\s+View$", "", name, flags=re.IGNORECASE).strip()
         candidates.append((rank, name))
 
     by_rank: Dict[int, str] = {}
@@ -81,8 +93,13 @@ def parse_top_free_top3(html: str) -> List[Dict[str, Any]]:
     for r in [1, 2, 3]:
         if r in by_rank:
             top3.append({"rank": r, "name": by_rank[r]})
+
     return top3
 
+
+# ------------------------
+# State handling
+# ------------------------
 def load_prev_state() -> List[Dict[str, Any]] | None:
     if not STATE_PATH.exists():
         return None
@@ -91,16 +108,26 @@ def load_prev_state() -> List[Dict[str, Any]] | None:
     except Exception:
         return None
 
+
 def save_state(top3: List[Dict[str, Any]]) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(top3, ensure_ascii=False, indent=2), encoding="utf-8")
+    STATE_PATH.write_text(
+        json.dumps(top3, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
 
 def format_top3(top3: List[Dict[str, Any]]) -> str:
     return "\n".join([f'{x["rank"]}. {x["name"]}' for x in top3])
 
+
+# ------------------------
+# Telegram
+# ------------------------
 def send_telegram(message: str) -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
     if not token or not chat_id:
         print("Telegram secrets not set; skipping alert.")
         return
@@ -122,14 +149,17 @@ def send_telegram(message: str) -> None:
         print("Telegram message delivered.")
     except Exception as e:
         print("Telegram request exception:", repr(e))
-        return
 
+
+# ------------------------
+# Main
+# ------------------------
 def main() -> int:
     html = fetch_html(URL)
     top3 = parse_top_free_top3(html)
 
     if len(top3) < 3:
-        print("Failed to parse top 3. Apple markup may have changed or request was blocked.")
+        print("Failed to parse top 3.")
         print("Parsed:", top3)
         return 1
 
@@ -139,30 +169,31 @@ def main() -> int:
     print("Current Top 3:")
     print(format_top3(top3))
 
-  # Always send the current Top 3
-heartbeat = (
-    "✅ App Store Top Free (US iPhone) check\n\n"
-    f"{format_top3(top3)}\n\n"
-    f"Source: {URL}"
-)
-send_telegram(heartbeat)
-
-# Optional: also send a separate message if it changed
-if prev is not None and prev != top3:
-    msg = (
-        "📲 App Store Top Free (US iPhone) changed!\n\n"
-        "Before:\n"
-        f"{format_top3(prev)}\n\n"
-        "Now:\n"
+    # Heartbeat (always sent)
+    heartbeat = (
+        "✅ App Store Top Free (US iPhone) check\n\n"
         f"{format_top3(top3)}\n\n"
         f"Source: {URL}"
     )
-    send_telegram(msg)
-    print("Change detected → Telegram alert sent.")
-else:
-    print("No changes in Top 3 (or first run).")
+    send_telegram(heartbeat)
+
+    # Change alert (optional)
+    if prev is not None and prev != top3:
+        msg = (
+            "📲 App Store Top Free (US iPhone) changed!\n\n"
+            "Before:\n"
+            f"{format_top3(prev)}\n\n"
+            "Now:\n"
+            f"{format_top3(top3)}\n\n"
+            f"Source: {URL}"
+        )
+        send_telegram(msg)
+        print("Change detected → Telegram alert sent.")
+    else:
+        print("No changes in Top 3 (or first run).")
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
