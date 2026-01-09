@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
@@ -13,6 +14,9 @@ from bs4 import BeautifulSoup
 URL = "https://apps.apple.com/us/iphone/charts/36?chart=top-free"
 STATE_PATH = Path("state/top3.json")
 
+HEARTBEAT_STATE_PATH = Path("state/last_heartbeat.json")
+HEARTBEAT_INTERVAL = timedelta(hours=4)
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -21,6 +25,7 @@ HEADERS = {
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
+
 
 # ------------------------
 # Fetch page
@@ -46,7 +51,7 @@ def extract_app_name_from_anchor(a) -> str | None:
     if not text.lower().endswith(" view"):
         return None
 
-    text = text[:-5].strip()
+    text = text[:-5].strip()  # drop " View"
     m = re.match(r"^(\d+)\s+(.+)$", text)
     if not m:
         return None
@@ -56,6 +61,7 @@ def extract_app_name_from_anchor(a) -> str | None:
     if not words:
         return None
 
+    # Heuristic: first few words are usually the app name
     return " ".join(words[:6]).strip()
 
 
@@ -84,6 +90,7 @@ def parse_top_free_top3(html: str) -> List[Dict[str, Any]]:
 
         candidates.append((rank, name))
 
+    # De-dupe by rank, first occurrence wins
     by_rank: Dict[int, str] = {}
     for rank, name in candidates:
         if rank not in by_rank:
@@ -113,6 +120,25 @@ def save_state(top3: List[Dict[str, Any]]) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(
         json.dumps(top3, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_last_heartbeat() -> datetime | None:
+    if not HEARTBEAT_STATE_PATH.exists():
+        return None
+    try:
+        data = json.loads(HEARTBEAT_STATE_PATH.read_text(encoding="utf-8"))
+        ts = data.get("ts")
+        return datetime.fromisoformat(ts) if ts else None
+    except Exception:
+        return None
+
+
+def save_last_heartbeat(ts: datetime) -> None:
+    HEARTBEAT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    HEARTBEAT_STATE_PATH.write_text(
+        json.dumps({"ts": ts.isoformat()}, indent=2),
         encoding="utf-8",
     )
 
@@ -169,15 +195,23 @@ def main() -> int:
     print("Current Top 3:")
     print(format_top3(top3))
 
-    # Heartbeat (always sent)
-    heartbeat = (
-        "✅ App Store Top Free (US iPhone) check\n\n"
-        f"{format_top3(top3)}\n\n"
-        f"Source: {URL}"
-    )
-    send_telegram(heartbeat)
+    # Heartbeat (once every 4 hours)
+    now = datetime.utcnow()
+    last_heartbeat = load_last_heartbeat()
 
-    # Change alert (optional)
+    if last_heartbeat is None or now - last_heartbeat >= HEARTBEAT_INTERVAL:
+        heartbeat = (
+            "✅ App Store Top Free (US iPhone) health check\n\n"
+            f"{format_top3(top3)}\n\n"
+            f"Source: {URL}"
+        )
+        send_telegram(heartbeat)
+        save_last_heartbeat(now)
+        print("Heartbeat sent.")
+    else:
+        print("Heartbeat skipped (interval not reached).")
+
+    # Change alert (immediate)
     if prev is not None and prev != top3:
         msg = (
             "📲 App Store Top Free (US iPhone) changed!\n\n"
