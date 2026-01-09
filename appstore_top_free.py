@@ -139,23 +139,28 @@ def main() -> int:
     print("Current Top 3:")
     print(format_top3(top3))
 
-    if prev is None:
-        print("No previous state found. Saved baseline.")
-        return 0
+  # Always send the current Top 3
+heartbeat = (
+    "✅ App Store Top Free (US iPhone) check\n\n"
+    f"{format_top3(top3)}\n\n"
+    f"Source: {URL}"
+)
+send_telegram(heartbeat)
 
-    if prev != top3:
-        msg = (
-            "📲 App Store Top Free (US iPhone) changed!\n\n"
-            "Before:\n"
-            f"{format_top3(prev)}\n\n"
-            "Now:\n"
-            f"{format_top3(top3)}\n\n"
-            f"Source: {URL}"
-        )
-        send_telegram(msg)
-        print("Change detected → Telegram alert sent.")
-    else:
-        print("No changes in Top 3.")
+# Optional: also send a separate message if it changed
+if prev is not None and prev != top3:
+    msg = (
+        "📲 App Store Top Free (US iPhone) changed!\n\n"
+        "Before:\n"
+        f"{format_top3(prev)}\n\n"
+        "Now:\n"
+        f"{format_top3(top3)}\n\n"
+        f"Source: {URL}"
+    )
+    send_telegram(msg)
+    print("Change detected → Telegram alert sent.")
+else:
+    print("No changes in Top 3 (or first run).")
 
     return 0
 
