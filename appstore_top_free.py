@@ -111,8 +111,18 @@ def send_telegram(message: str) -> None:
         "text": message,
         "disable_web_page_preview": True,
     }
-    r = requests.post(url, json=payload, timeout=30)
-    r.raise_for_status()
+
+    try:
+        r = requests.post(url, json=payload, timeout=30)
+        if not r.ok:
+            print("Telegram sendMessage failed!")
+            print("Status:", r.status_code)
+            print("Response:", r.text)
+            return
+        print("Telegram message delivered.")
+    except Exception as e:
+        print("Telegram request exception:", repr(e))
+        return
 
 def main() -> int:
     html = fetch_html(URL)
