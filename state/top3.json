@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "rank": 1,
+    "name": "ChatGPT"
+  },
+  {
+    "rank": 2,
+    "name": "Google Gemini"
+  },
+  {
+    "rank": 3,
+    "name": "Threads"
+  }
+]
