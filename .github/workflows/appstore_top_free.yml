@@ -2,8 +2,8 @@ name: App Store Charts Monitor
 
 on:
   schedule:
-    # runs every 15 minutes
-    - cron: "*/15 * * * *"
+    # runs every 5 minutes
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
