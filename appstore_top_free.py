@@ -11,8 +11,11 @@ from typing import List, Dict, Any, Tuple
 import requests
 from bs4 import BeautifulSoup
 
-URL = "https://apps.apple.com/us/iphone/charts/36?chart=top-free"
-STATE_PATH = Path("state/top3.json")
+FREE_URL = "https://apps.apple.com/us/iphone/charts/36?chart=top-free"
+PAID_URL = "https://apps.apple.com/us/iphone/charts/36?chart=top-paid"
+
+FREE_STATE_PATH = Path("state/top3_free.json")
+PAID_STATE_PATH = Path("state/top1_paid.json")
 
 HEARTBEAT_STATE_PATH = Path("state/last_heartbeat.json")
 HEARTBEAT_INTERVAL = timedelta(hours=4)
@@ -40,18 +43,22 @@ def fetch_html(url: str) -> str:
 # Parse helpers
 # ------------------------
 def extract_app_name_from_anchor(a) -> str | None:
+    # Prefer structured title elements if present
     title_el = a.find(["h3", "h2"])
     if title_el:
         name = title_el.get_text(" ", strip=True)
         return name or None
 
+    # Fallback: parse visible anchor text like "1 ChatGPT ... View"
     text = a.get_text(" ", strip=True)
     text = re.sub(r"\s+", " ", text).strip()
 
-    if not text.lower().endswith(" view"):
+    if not re.match(r"^\d+\s", text):
         return None
 
-    text = text[:-5].strip()  # drop " View"
+    # Some variants include trailing "View"
+    text = re.sub(r"\s+View$", "", text, flags=re.IGNORECASE).strip()
+
     m = re.match(r"^(\d+)\s+(.+)$", text)
     if not m:
         return None
@@ -65,7 +72,7 @@ def extract_app_name_from_anchor(a) -> str | None:
     return " ".join(words[:6]).strip()
 
 
-def parse_top_free_top3(html: str) -> List[Dict[str, Any]]:
+def parse_chart_topN(html: str, ranks: List[int]) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html, "html.parser")
     anchors = soup.find_all("a", href=True)
 
@@ -84,6 +91,9 @@ def parse_top_free_top3(html: str) -> List[Dict[str, Any]]:
             continue
 
         rank = int(m_rank.group(1))
+        if rank not in ranks:
+            continue
+
         name = extract_app_name_from_anchor(a)
         if not name:
             continue
@@ -96,30 +106,34 @@ def parse_top_free_top3(html: str) -> List[Dict[str, Any]]:
         if rank not in by_rank:
             by_rank[rank] = name
 
-    top3 = []
-    for r in [1, 2, 3]:
+    out: List[Dict[str, Any]] = []
+    for r in ranks:
         if r in by_rank:
-            top3.append({"rank": r, "name": by_rank[r]})
+            out.append({"rank": r, "name": by_rank[r]})
 
-    return top3
+    return out
+
+
+def format_ranked_list(items: List[Dict[str, Any]]) -> str:
+    return "\n".join([f'{x["rank"]}. {x["name"]}' for x in items])
 
 
 # ------------------------
 # State handling
 # ------------------------
-def load_prev_state() -> List[Dict[str, Any]] | None:
-    if not STATE_PATH.exists():
+def load_json_list(path: Path) -> List[Dict[str, Any]] | None:
+    if not path.exists():
         return None
     try:
-        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
 
 
-def save_state(top3: List[Dict[str, Any]]) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(
-        json.dumps(top3, ensure_ascii=False, indent=2),
+def save_json_list(path: Path, data: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -141,10 +155,6 @@ def save_last_heartbeat(ts: datetime) -> None:
         json.dumps({"ts": ts.isoformat()}, indent=2),
         encoding="utf-8",
     )
-
-
-def format_top3(top3: List[Dict[str, Any]]) -> str:
-    return "\n".join([f'{x["rank"]}. {x["name"]}' for x in top3])
 
 
 # ------------------------
@@ -181,29 +191,48 @@ def send_telegram(message: str) -> None:
 # Main
 # ------------------------
 def main() -> int:
-    html = fetch_html(URL)
-    top3 = parse_top_free_top3(html)
+    # ---- Fetch + parse FREE top 3 ----
+    free_html = fetch_html(FREE_URL)
+    free_top3 = parse_chart_topN(free_html, ranks=[1, 2, 3])
 
-    if len(top3) < 3:
-        print("Failed to parse top 3.")
-        print("Parsed:", top3)
+    if len(free_top3) < 3:
+        print("Failed to parse FREE top 3.")
+        print("Parsed:", free_top3)
         return 1
 
-    prev = load_prev_state()
-    save_state(top3)
+    # ---- Fetch + parse PAID top 1 ----
+    paid_html = fetch_html(PAID_URL)
+    paid_top1 = parse_chart_topN(paid_html, ranks=[1])
 
-    print("Current Top 3:")
-    print(format_top3(top3))
+    if len(paid_top1) < 1:
+        print("Failed to parse PAID top 1.")
+        print("Parsed:", paid_top1)
+        return 1
 
-    # Heartbeat (once every 4 hours)
+    prev_free = load_json_list(FREE_STATE_PATH)
+    prev_paid = load_json_list(PAID_STATE_PATH)
+
+    # Save current states (commit step will only commit if files changed)
+    save_json_list(FREE_STATE_PATH, free_top3)
+    save_json_list(PAID_STATE_PATH, paid_top1)
+
+    print("Current FREE Top 3:")
+    print(format_ranked_list(free_top3))
+    print("\nCurrent PAID Top 1:")
+    print(format_ranked_list(paid_top1))
+
+    # ---- Heartbeat (once every 4 hours) ----
     now = datetime.utcnow()
     last_heartbeat = load_last_heartbeat()
-
     if last_heartbeat is None or now - last_heartbeat >= HEARTBEAT_INTERVAL:
         heartbeat = (
-            "✅ App Store Top Free (US iPhone) health check\n\n"
-            f"{format_top3(top3)}\n\n"
-            f"Source: {URL}"
+            "✅ App Store Charts (US iPhone) health check\n\n"
+            "Top Free:\n"
+            f"{format_ranked_list(free_top3)}\n\n"
+            "Top Paid:\n"
+            f"{format_ranked_list(paid_top1)}\n\n"
+            f"Free source: {FREE_URL}\n"
+            f"Paid source: {PAID_URL}"
         )
         send_telegram(heartbeat)
         save_last_heartbeat(now)
@@ -211,20 +240,34 @@ def main() -> int:
     else:
         print("Heartbeat skipped (interval not reached).")
 
-    # Change alert (immediate)
-    if prev is not None and prev != top3:
+    # ---- Change alerts (immediate) ----
+    if prev_free is not None and prev_free != free_top3:
         msg = (
             "📲 App Store Top Free (US iPhone) changed!\n\n"
             "Before:\n"
-            f"{format_top3(prev)}\n\n"
+            f"{format_ranked_list(prev_free)}\n\n"
             "Now:\n"
-            f"{format_top3(top3)}\n\n"
-            f"Source: {URL}"
+            f"{format_ranked_list(free_top3)}\n\n"
+            f"Source: {FREE_URL}"
         )
         send_telegram(msg)
-        print("Change detected → Telegram alert sent.")
+        print("Free change alert sent.")
     else:
-        print("No changes in Top 3 (or first run).")
+        print("No changes in FREE Top 3 (or first run).")
+
+    if prev_paid is not None and prev_paid != paid_top1:
+        msg = (
+            "💰 App Store Top Paid #1 (US iPhone) changed!\n\n"
+            "Before:\n"
+            f"{format_ranked_list(prev_paid)}\n\n"
+            "Now:\n"
+            f"{format_ranked_list(paid_top1)}\n\n"
+            f"Source: {PAID_URL}"
+        )
+        send_telegram(msg)
+        print("Paid change alert sent.")
+    else:
+        print("No changes in PAID Top 1 (or first run).")
 
     return 0
 
