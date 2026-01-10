@@ -154,43 +154,40 @@ def parse_tsa_latest(html: str) -> Dict[str, Any] | None:
     if not tables:
         return None
 
-    best_row = None
-
     for table in tables:
         rows = table.find_all("tr")
         if len(rows) < 2:
             continue
 
-        # Find header row text to identify the right table
         header_text = " ".join(rows[0].get_text(" ", strip=True).lower().split())
         if "date" not in header_text:
             continue
-        # Often includes "total traveler throughput"
-        if "throughput" not in header_text and "traveler" not in header_text and "passenger" not in header_text:
-            # still might be the right table, but deprioritize
-            pass
 
         # First data row is usually the latest
-        for r in rows[1:3]:  # look at first couple data rows for safety
+        for r in rows[1:4]:
             cells = [c.get_text(" ", strip=True) for c in r.find_all(["td", "th"])]
             if len(cells) < 2:
                 continue
             date_iso = _parse_tsa_date(cells[0])
             passengers = _parse_int(cells[1])
             if date_iso and passengers is not None:
-                best_row = {"date": date_iso, "passengers": passengers}
-                break
+                return {"date": date_iso, "passengers": passengers}
 
-        if best_row:
-            break
-
-    return best_row
+    return None
 
 
 def format_tsa(tsa: Dict[str, Any] | None) -> str:
-    if not tsa:
-        return "TSA: (parse failed)"
-    return f"TSA: {tsa['date']} — {tsa['passengers']:,} passengers"
+    if not isinstance(tsa, dict):
+        return "✈️ TSA: (no data yet)"
+    date = tsa.get("date")
+    pax = tsa.get("passengers")
+    if not date or pax is None:
+        return "✈️ TSA: (invalid data)"
+    try:
+        pax_int = int(pax)
+    except Exception:
+        return "✈️ TSA: (invalid data)"
+    return f"✈️ TSA: {date} — {pax_int:,} passengers"
 
 
 # ------------------------
@@ -277,33 +274,40 @@ def main() -> int:
         print("Parsed:", paid_top1)
         return 1
 
-    # ---- TSA: latest date + passengers ----
-    tsa_html = fetch_html(TSA_URL)
-    tsa_latest = parse_tsa_latest(tsa_html)
-    if not tsa_latest:
-        print("Failed to parse TSA latest row.")
-    else:
-        print("TSA latest:", tsa_latest)
-
+    # Load previous states early (also used for TSA fallback)
     prev_free = load_json(FREE_STATE_PATH)
     prev_paid = load_json(PAID_STATE_PATH)
     prev_tsa = load_json(TSA_STATE_PATH)
 
-    # Save states (workflow commits only if something changes)
+    # ---- TSA: latest date + passengers ----
+    tsa_latest = None
+    try:
+        tsa_html = fetch_html(TSA_URL)
+        tsa_latest = parse_tsa_latest(tsa_html)
+    except Exception as e:
+        print("TSA fetch/parse exception:", repr(e))
+
+    if tsa_latest:
+        print("TSA latest:", tsa_latest)
+        save_json(TSA_STATE_PATH, tsa_latest)  # update state
+    else:
+        print("Failed to parse TSA latest row. Using previous state for heartbeat if available.")
+
+    # Save App Store states (workflow commits only if changed)
     save_json(FREE_STATE_PATH, free_top3)
     save_json(PAID_STATE_PATH, paid_top1)
-    if tsa_latest:
-        save_json(TSA_STATE_PATH, tsa_latest)
 
     print("Current FREE Top 3:")
     print(format_ranked_list(free_top3))
     print("\nCurrent PAID Top 1:")
     print(format_ranked_list(paid_top1))
-    print("\n" + format_tsa(tsa_latest))
+    print("\n" + format_tsa(tsa_latest if tsa_latest else prev_tsa))
 
     # ---- Heartbeat (once every 4 hours) ----
     now = datetime.utcnow()
     last_heartbeat = load_last_heartbeat()
+
+    tsa_for_heartbeat = tsa_latest if tsa_latest else prev_tsa
 
     if last_heartbeat is None or now - last_heartbeat >= HEARTBEAT_INTERVAL:
         heartbeat = (
@@ -313,7 +317,7 @@ def main() -> int:
             f"{format_ranked_list(free_top3)}\n\n"
             "Top Paid:\n"
             f"{format_ranked_list(paid_top1)}\n\n"
-            f"{format_tsa(tsa_latest)}\n\n"
+            f"{format_tsa(tsa_for_heartbeat)}\n\n"
             f"Free: {FREE_URL}\n"
             f"Paid: {PAID_URL}\n"
             f"TSA: {TSA_URL}"
@@ -356,7 +360,8 @@ def main() -> int:
     # TSA change alert: only when DATE changes
     if tsa_latest and isinstance(prev_tsa, dict):
         prev_date = prev_tsa.get("date")
-        if prev_date and prev_date != tsa_latest.get("date"):
+        new_date = tsa_latest.get("date")
+        if prev_date and new_date and prev_date != new_date:
             msg = (
                 "✈️ TSA passenger volumes updated!\n\n"
                 f"Previous: {prev_tsa.get('date')} — {int(prev_tsa.get('passengers', 0)):,} passengers\n"
