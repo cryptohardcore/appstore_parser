@@ -1,5 +1,8 @@
 {
-  "row_key": "row_366",
+  "approve_col": "approve",
+  "modeldate_col": "modeldate",
   "approve": "41.96344",
-  "col": "approve"
+  "approve_row_key": "row_366",
+  "modeldate": "1/21/2026",
+  "modeldate_row_key": "row_366"
 }
