@@ -40,10 +40,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stage any state files (including new ones)
           git add state/
 
-          # Commit only if something is staged
           if git diff --cached --quiet; then
             echo "No state changes to commit."
           else
