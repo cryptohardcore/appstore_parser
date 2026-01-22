@@ -1,9 +1,8 @@
-name: App Store Charts Monitor
+name: App Store + TSA + Approval Monitor
 
 on:
   schedule:
-    # runs every 5 minutes
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -29,7 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run App Store monitor
+      - name: Run monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -48,6 +47,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No state changes to commit."
           else
-            git commit -m "Update App Store state"
+            git commit -m "Update monitor state"
             git push
           fi
