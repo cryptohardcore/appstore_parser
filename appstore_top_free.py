@@ -19,10 +19,7 @@ from bs4 import BeautifulSoup
 FREE_URL = "https://apps.apple.com/us/iphone/charts/36?chart=top-free"
 PAID_URL = "https://apps.apple.com/us/iphone/charts/36?chart=top-paid"
 TSA_URL = "https://www.tsa.gov/travel/passenger-volumes"
-
-# Approval feeds
 APPROVAL_CSV_URL = "https://static.dwcdn.net/data/kSCt4.csv"
-TRUMP_APPROVAL_CSV_URL = "https://static.dwcdn.net/data/kSCt4.csv"
 
 # ------------------------
 # State files
@@ -30,9 +27,7 @@ TRUMP_APPROVAL_CSV_URL = "https://static.dwcdn.net/data/kSCt4.csv"
 FREE_STATE_PATH = Path("state/top3_free.json")
 PAID_STATE_PATH = Path("state/top1_paid.json")
 TSA_STATE_PATH = Path("state/tsa_latest.json")
-
 APPROVAL_STATE_PATH = Path("state/approval_latest.json")
-TRUMP_APPROVAL_STATE_PATH = Path("state/trump_approval_latest.json")
 
 HEARTBEAT_STATE_PATH = Path("state/last_heartbeat.json")
 HEARTBEAT_INTERVAL = timedelta(hours=4)
@@ -175,7 +170,6 @@ def parse_tsa_latest(html: str) -> Dict[str, Any] | None:
         if "date" not in header_text:
             continue
 
-        # First data row is usually latest
         for r in rows[1:4]:
             cells = [c.get_text(" ", strip=True) for c in r.find_all(["td", "th"])]
             if len(cells) < 2:
@@ -203,33 +197,46 @@ def format_tsa(tsa: Dict[str, Any] | None) -> str:
 
 
 # ------------------------
-# Approval CSV parsing (generic)
+# Approval CSV parsing (approve/approval)
 # ------------------------
-def parse_latest_approval_from_csv(csv_text: str) -> Dict[str, Any] | None:
+def parse_latest_approve_from_csv(csv_text: str) -> Dict[str, Any] | None:
     """
-    Finds the newest non-empty value in the 'approval' column.
-    Newest = last row in the CSV with non-empty approval.
-    Captures a date-like key from common columns; otherwise uses row index.
+    Finds the newest non-empty value in the 'approve' column.
+    Also supports 'approval' as a fallback.
+    Newest = last row in the CSV with non-empty approve value.
     """
+    # If we accidentally fetched HTML, bail
+    head = csv_text.lstrip()[:200].lower()
+    if head.startswith("<!doctype") or head.startswith("<html"):
+        return None
+
     reader = csv.DictReader(io.StringIO(csv_text))
     if not reader.fieldnames:
         return None
 
-    approval_col = None
-    for c in reader.fieldnames:
-        if c and c.strip().lower() == "approval":
-            approval_col = c
+    # handle BOM on first header
+    fieldnames = [f.lstrip("\ufeff") if f else f for f in reader.fieldnames]
+
+    # Prefer 'approve', fallback to 'approval'
+    col = None
+    for target in ("approve", "approval"):
+        for c in fieldnames:
+            if c and c.strip().lower() == target:
+                col = c
+                break
+        if col:
             break
-    if not approval_col:
+    if not col:
         return None
 
-    date_key_col = None
+    # optional key column
+    key_col = None
     for candidate in ("date", "day", "week", "month", "timestamp", "time"):
-        for c in reader.fieldnames:
+        for c in fieldnames:
             if c and c.strip().lower() == candidate:
-                date_key_col = c
+                key_col = c
                 break
-        if date_key_col:
+        if key_col:
             break
 
     rows = list(reader)
@@ -238,31 +245,29 @@ def parse_latest_approval_from_csv(csv_text: str) -> Dict[str, Any] | None:
 
     for i in range(len(rows) - 1, -1, -1):
         row = rows[i]
-        val = (row.get(approval_col) or "").strip()
+        val = (row.get(col) or "").strip()
         if val == "":
             continue
 
-        row_key = None
-        if date_key_col:
-            row_key = (row.get(date_key_col) or "").strip() or None
+        row_key = (row.get(key_col) or "").strip() if key_col else ""
         if not row_key:
             row_key = f"row_{i+1}"
 
-        return {"row_key": row_key, "approval": val}
+        return {"row_key": row_key, "approve": val, "col": col}
 
     return None
 
 
-def format_approval(label: str, a: Dict[str, Any] | None) -> str:
+def format_approve(a: Dict[str, Any] | None) -> str:
     if not isinstance(a, dict):
-        return f"📊 {label}: (no data yet)"
+        return "📊 Approve: (no data yet)"
     key = a.get("row_key")
-    val = a.get("approval")
+    val = a.get("approve")
     if not val:
-        return f"📊 {label}: (invalid data)"
+        return "📊 Approve: (invalid data)"
     if key:
-        return f"📊 {label}: {val} (latest: {key})"
-    return f"📊 {label}: {val} (latest)"
+        return f"📊 Approve: {val} (latest: {key})"
+    return f"📊 Approve: {val} (latest)"
 
 
 # ------------------------
@@ -329,31 +334,6 @@ def send_telegram(message: str) -> None:
         print("Telegram request exception:", repr(e))
 
 
-def maybe_send_approval_alert(label: str, source_url: str, prev: Any, latest: Dict[str, Any] | None) -> None:
-    # Only alert when we have both prev and latest
-    if not latest or not isinstance(prev, dict):
-        print(f"No {label} approval update (or first run / parse failed).")
-        return
-
-    prev_key = (prev.get("row_key") or "").strip()
-    prev_val = (str(prev.get("approval") or "")).strip()
-    new_key = (latest.get("row_key") or "").strip()
-    new_val = (str(latest.get("approval") or "")).strip()
-
-    # Alert if row changes OR value changes
-    if (prev_key and new_key and prev_key != new_key) or (prev_val and new_val and prev_val != new_val):
-        msg = (
-            f"📊 {label} approval updated!\n\n"
-            f"Previous: {prev_key or '(unknown)'} — {prev_val or '(empty)'}\n"
-            f"Latest: {new_key or '(unknown)'} — {new_val or '(empty)'}\n\n"
-            f"Source: {source_url}"
-        )
-        send_telegram(msg)
-        print(f"{label} approval update alert sent.")
-    else:
-        print(f"No {label} approval update.")
-
-
 # ------------------------
 # Main
 # ------------------------
@@ -362,17 +342,15 @@ def main() -> int:
     prev_free = load_json(FREE_STATE_PATH)
     prev_paid = load_json(PAID_STATE_PATH)
     prev_tsa = load_json(TSA_STATE_PATH)
-    prev_approval = load_json(APPROVAL_STATE_PATH)
-    prev_trump_approval = load_json(TRUMP_APPROVAL_STATE_PATH)
+    prev_approve = load_json(APPROVAL_STATE_PATH)
 
-    # ---- App Store: FREE top 3 ----
+    # ---- App Store ----
     free_top3 = parse_chart_topN(fetch_html(FREE_URL), ranks=[1, 2, 3])
     if len(free_top3) < 3:
         print("Failed to parse FREE top 3.")
         print("Parsed:", free_top3)
         return 1
 
-    # ---- App Store: PAID top 1 ----
     paid_top1 = parse_chart_topN(fetch_html(PAID_URL), ranks=[1])
     if len(paid_top1) < 1:
         print("Failed to parse PAID top 1.")
@@ -392,31 +370,18 @@ def main() -> int:
     else:
         print("Failed to parse TSA latest row. Using previous TSA state for heartbeat if available.")
 
-    # ---- Approval (generic) ----
-    approval_latest = None
+    # ---- Approve CSV ----
+    approve_latest = None
     try:
-        approval_latest = parse_latest_approval_from_csv(fetch_text(APPROVAL_CSV_URL))
+        approve_latest = parse_latest_approve_from_csv(fetch_text(APPROVAL_CSV_URL))
     except Exception as e:
-        print("Approval CSV fetch/parse exception:", repr(e))
+        print("Approve CSV fetch/parse exception:", repr(e))
 
-    if approval_latest:
-        save_json(APPROVAL_STATE_PATH, approval_latest)
-        print("Approval latest:", approval_latest)
+    if approve_latest:
+        save_json(APPROVAL_STATE_PATH, approve_latest)
+        print("Approve latest:", approve_latest)
     else:
-        print("Failed to parse approval CSV. Using previous approval state for heartbeat if available.")
-
-    # ---- Trump approval (same parsing rules) ----
-    trump_approval_latest = None
-    try:
-        trump_approval_latest = parse_latest_approval_from_csv(fetch_text(TRUMP_APPROVAL_CSV_URL))
-    except Exception as e:
-        print("Trump approval CSV fetch/parse exception:", repr(e))
-
-    if trump_approval_latest:
-        save_json(TRUMP_APPROVAL_STATE_PATH, trump_approval_latest)
-        print("Trump approval latest:", trump_approval_latest)
-    else:
-        print("Failed to parse Trump approval CSV. Using previous state for heartbeat if available.")
+        print("Failed to parse approve CSV. Using previous approve state for heartbeat if available.")
 
     # Save App Store states
     save_json(FREE_STATE_PATH, free_top3)
@@ -427,8 +392,7 @@ def main() -> int:
     last_heartbeat = load_last_heartbeat()
 
     tsa_for_heartbeat = tsa_latest if tsa_latest else prev_tsa
-    approval_for_heartbeat = approval_latest if approval_latest else prev_approval
-    trump_for_heartbeat = trump_approval_latest if trump_approval_latest else prev_trump_approval
+    approve_for_heartbeat = approve_latest if approve_latest else prev_approve
 
     if last_heartbeat is None or now - last_heartbeat >= HEARTBEAT_INTERVAL:
         heartbeat = (
@@ -439,13 +403,11 @@ def main() -> int:
             "Top Paid:\n"
             f"{format_ranked_list(paid_top1)}\n\n"
             f"{format_tsa(tsa_for_heartbeat)}\n"
-            f"{format_approval('Approval', approval_for_heartbeat)}\n"
-            f"{format_approval('Trump Approval', trump_for_heartbeat)}\n\n"
+            f"{format_approve(approve_for_heartbeat)}\n\n"
             f"Free: {FREE_URL}\n"
             f"Paid: {PAID_URL}\n"
             f"TSA: {TSA_URL}\n"
-            f"Approval CSV: {APPROVAL_CSV_URL}\n"
-            f"Trump Approval CSV: {TRUMP_APPROVAL_CSV_URL}"
+            f"CSV: {APPROVAL_CSV_URL}"
         )
         send_telegram(heartbeat)
         save_last_heartbeat(now)
@@ -453,7 +415,7 @@ def main() -> int:
     else:
         print("Heartbeat skipped (interval not reached).")
 
-    # ---- Change alerts ----
+    # ---- Change alerts (immediate) ----
     if isinstance(prev_free, list) and prev_free != free_top3:
         msg = (
             "📲 App Store Top Free changed!\n\n"
@@ -482,7 +444,7 @@ def main() -> int:
     else:
         print("No changes in PAID Top 1 (or first run).")
 
-    # TSA date-change alert (only when DATE changes)
+    # TSA alert: only when DATE changes
     if tsa_latest and isinstance(prev_tsa, dict):
         prev_date = prev_tsa.get("date")
         new_date = tsa_latest.get("date")
@@ -500,9 +462,26 @@ def main() -> int:
     else:
         print("No TSA date change (or first run / parse failed).")
 
-    # Approval alerts
-    maybe_send_approval_alert("Approval", APPROVAL_CSV_URL, prev_approval, approval_latest)
-    maybe_send_approval_alert("Trump", TRUMP_APPROVAL_CSV_URL, prev_trump_approval, trump_approval_latest)
+    # Approve alert: when row_key or value changes
+    if approve_latest and isinstance(prev_approve, dict):
+        prev_key = (prev_approve.get("row_key") or "").strip()
+        prev_val = (str(prev_approve.get("approve") or prev_approve.get("approval") or "")).strip()
+        new_key = (approve_latest.get("row_key") or "").strip()
+        new_val = (str(approve_latest.get("approve") or "")).strip()
+
+        if (prev_key and new_key and prev_key != new_key) or (prev_val and new_val and prev_val != new_val):
+            msg = (
+                "📊 Approve data updated!\n\n"
+                f"Previous: {prev_key or '(unknown)'} — {prev_val or '(empty)'}\n"
+                f"Latest: {new_key or '(unknown)'} — {new_val or '(empty)'}\n\n"
+                f"Source: {APPROVAL_CSV_URL}"
+            )
+            send_telegram(msg)
+            print("Approve update alert sent.")
+        else:
+            print("No approve update (or first run).")
+    else:
+        print("No approve update (or first run / parse failed).")
 
     return 0
 
