@@ -197,77 +197,111 @@ def format_tsa(tsa: Dict[str, Any] | None) -> str:
 
 
 # ------------------------
-# Approval CSV parsing (approve/approval)
+# Approval CSV parsing (approve + modeldate)
 # ------------------------
-def parse_latest_approve_from_csv(csv_text: str) -> Dict[str, Any] | None:
+def _is_html(text: str) -> bool:
+    head = text.lstrip()[:200].lower()
+    return head.startswith("<!doctype") or head.startswith("<html")
+
+
+def parse_latest_approve_and_modeldate(csv_text: str) -> Dict[str, Any] | None:
     """
-    Finds the newest non-empty value in the 'approve' column.
-    Also supports 'approval' as a fallback.
-    Newest = last row in the CSV with non-empty approve value.
+    Extracts:
+      - newest non-empty value in 'approve' column (fallback: 'approval')
+      - newest non-empty value in 'modeldate' column
+    "Newest" is interpreted as scanning from the bottom.
+    State includes both values + their row keys (for debugging only).
     """
-    # If we accidentally fetched HTML, bail
-    head = csv_text.lstrip()[:200].lower()
-    if head.startswith("<!doctype") or head.startswith("<html"):
+    if _is_html(csv_text):
         return None
 
     reader = csv.DictReader(io.StringIO(csv_text))
     if not reader.fieldnames:
         return None
 
-    # handle BOM on first header
+    # Handle BOM
     fieldnames = [f.lstrip("\ufeff") if f else f for f in reader.fieldnames]
 
-    # Prefer 'approve', fallback to 'approval'
-    col = None
-    for target in ("approve", "approval"):
+    def find_col_exact(name: str) -> str | None:
         for c in fieldnames:
-            if c and c.strip().lower() == target:
-                col = c
-                break
-        if col:
-            break
-    if not col:
+            if c and c.strip().lower() == name:
+                return c
         return None
 
-    # optional key column
+    approve_col = find_col_exact("approve") or find_col_exact("approval")
+    modeldate_col = find_col_exact("modeldate")
+
+    if not approve_col and not modeldate_col:
+        return None
+
+    # Optional key column for identifying the row (date-like)
     key_col = None
     for candidate in ("date", "day", "week", "month", "timestamp", "time"):
-        for c in fieldnames:
-            if c and c.strip().lower() == candidate:
-                key_col = c
-                break
-        if key_col:
+        kc = find_col_exact(candidate)
+        if kc:
+            key_col = kc
             break
 
     rows = list(reader)
     if not rows:
         return None
 
+    newest_approve = None
+    newest_approve_key = None
+    newest_modeldate = None
+    newest_modeldate_key = None
+
     for i in range(len(rows) - 1, -1, -1):
         row = rows[i]
-        val = (row.get(col) or "").strip()
-        if val == "":
-            continue
-
         row_key = (row.get(key_col) or "").strip() if key_col else ""
         if not row_key:
             row_key = f"row_{i+1}"
 
-        return {"row_key": row_key, "approve": val, "col": col}
+        if approve_col and newest_approve is None:
+            v = (row.get(approve_col) or "").strip()
+            if v != "":
+                newest_approve = v
+                newest_approve_key = row_key
 
-    return None
+        if modeldate_col and newest_modeldate is None:
+            md = (row.get(modeldate_col) or "").strip()
+            if md != "":
+                newest_modeldate = md
+                newest_modeldate_key = row_key
+
+        if (not approve_col or newest_approve is not None) and (not modeldate_col or newest_modeldate is not None):
+            break
+
+    if newest_approve is None and newest_modeldate is None:
+        return None
+
+    out: Dict[str, Any] = {
+        "approve_col": approve_col,
+        "modeldate_col": modeldate_col,
+    }
+
+    if newest_approve is not None:
+        out["approve"] = newest_approve
+        out["approve_row_key"] = newest_approve_key
+
+    if newest_modeldate is not None:
+        out["modeldate"] = newest_modeldate
+        out["modeldate_row_key"] = newest_modeldate_key
+
+    return out
 
 
-def format_approve(a: Dict[str, Any] | None) -> str:
+def format_approval_state(a: Dict[str, Any] | None) -> str:
     if not isinstance(a, dict):
-        return "📊 Approve: (no data yet)"
-    key = a.get("row_key")
-    val = a.get("approve")
-    if not val:
-        return "📊 Approve: (invalid data)"
-    if key:
-        return f"📊 Approve: {val} (latest: {key})"
-    return f"📊 Approve: {val} (latest)"
+        return "📊 Approve: (no data yet)\n🗓️ Modeldate: (no data yet)"
+
+    approve = a.get("approve")
+    modeldate = a.get("modeldate")
+
+    line1 = "📊 Approve: (missing)" if approve is None else f"📊 Approve: {approve}"
+    line2 = "🗓️ Modeldate: (missing)" if modeldate is None else f"🗓️ Modeldate: {modeldate}"
+
+    return f"{line1}\n{line2}"
 
 
 # ------------------------
@@ -338,13 +372,12 @@ def send_telegram(message: str) -> None:
 # Main
 # ------------------------
 def main() -> int:
-    # Load previous states early
     prev_free = load_json(FREE_STATE_PATH)
     prev_paid = load_json(PAID_STATE_PATH)
     prev_tsa = load_json(TSA_STATE_PATH)
-    prev_approve = load_json(APPROVAL_STATE_PATH)
+    prev_approval = load_json(APPROVAL_STATE_PATH)
 
-    # ---- App Store ----
+    # App Store
     free_top3 = parse_chart_topN(fetch_html(FREE_URL), ranks=[1, 2, 3])
     if len(free_top3) < 3:
         print("Failed to parse FREE top 3.")
@@ -357,7 +390,7 @@ def main() -> int:
         print("Parsed:", paid_top1)
         return 1
 
-    # ---- TSA ----
+    # TSA
     tsa_latest = None
     try:
         tsa_latest = parse_tsa_latest(fetch_html(TSA_URL))
@@ -370,29 +403,29 @@ def main() -> int:
     else:
         print("Failed to parse TSA latest row. Using previous TSA state for heartbeat if available.")
 
-    # ---- Approve CSV ----
-    approve_latest = None
+    # Approve + modeldate
+    approval_latest = None
     try:
-        approve_latest = parse_latest_approve_from_csv(fetch_text(APPROVAL_CSV_URL))
+        approval_latest = parse_latest_approve_and_modeldate(fetch_text(APPROVAL_CSV_URL))
     except Exception as e:
-        print("Approve CSV fetch/parse exception:", repr(e))
+        print("Approve/modeldate CSV fetch/parse exception:", repr(e))
 
-    if approve_latest:
-        save_json(APPROVAL_STATE_PATH, approve_latest)
-        print("Approve latest:", approve_latest)
+    if approval_latest:
+        save_json(APPROVAL_STATE_PATH, approval_latest)
+        print("Approval latest:", approval_latest)
     else:
-        print("Failed to parse approve CSV. Using previous approve state for heartbeat if available.")
+        print("Failed to parse approve/modeldate CSV. Using previous state for heartbeat if available.")
 
     # Save App Store states
     save_json(FREE_STATE_PATH, free_top3)
     save_json(PAID_STATE_PATH, paid_top1)
 
-    # ---- Heartbeat (once every 4 hours) ----
+    # Heartbeat every 4h
     now = datetime.utcnow()
     last_heartbeat = load_last_heartbeat()
 
     tsa_for_heartbeat = tsa_latest if tsa_latest else prev_tsa
-    approve_for_heartbeat = approve_latest if approve_latest else prev_approve
+    approval_for_heartbeat = approval_latest if approval_latest else prev_approval
 
     if last_heartbeat is None or now - last_heartbeat >= HEARTBEAT_INTERVAL:
         heartbeat = (
@@ -403,7 +436,7 @@ def main() -> int:
             "Top Paid:\n"
             f"{format_ranked_list(paid_top1)}\n\n"
             f"{format_tsa(tsa_for_heartbeat)}\n"
-            f"{format_approve(approve_for_heartbeat)}\n\n"
+            f"{format_approval_state(approval_for_heartbeat)}\n\n"
             f"Free: {FREE_URL}\n"
             f"Paid: {PAID_URL}\n"
             f"TSA: {TSA_URL}\n"
@@ -415,7 +448,7 @@ def main() -> int:
     else:
         print("Heartbeat skipped (interval not reached).")
 
-    # ---- Change alerts (immediate) ----
+    # Alerts: free changes
     if isinstance(prev_free, list) and prev_free != free_top3:
         msg = (
             "📲 App Store Top Free changed!\n\n"
@@ -430,6 +463,7 @@ def main() -> int:
     else:
         print("No changes in FREE Top 3 (or first run).")
 
+    # Alerts: paid #1 changes
     if isinstance(prev_paid, list) and prev_paid != paid_top1:
         msg = (
             "💰 App Store Top Paid #1 changed!\n\n"
@@ -444,7 +478,7 @@ def main() -> int:
     else:
         print("No changes in PAID Top 1 (or first run).")
 
-    # TSA alert: only when DATE changes
+    # Alerts: TSA date-change
     if tsa_latest and isinstance(prev_tsa, dict):
         prev_date = prev_tsa.get("date")
         new_date = tsa_latest.get("date")
@@ -462,26 +496,32 @@ def main() -> int:
     else:
         print("No TSA date change (or first run / parse failed).")
 
-    # Approve alert: when row_key or value changes
-    if approve_latest and isinstance(prev_approve, dict):
-        prev_key = (prev_approve.get("row_key") or "").strip()
-        prev_val = (str(prev_approve.get("approve") or prev_approve.get("approval") or "")).strip()
-        new_key = (approve_latest.get("row_key") or "").strip()
-        new_val = (str(approve_latest.get("approve") or "")).strip()
+    # Alerts: approve/modeldate
+    # - approve: compare value
+    # - modeldate: compare DATE VALUE ONLY (your request)
+    if approval_latest and isinstance(prev_approval, dict):
+        prev_approve = (str(prev_approval.get("approve") or "")).strip()
+        new_approve = (str(approval_latest.get("approve") or "")).strip()
 
-        if (prev_key and new_key and prev_key != new_key) or (prev_val and new_val and prev_val != new_val):
+        prev_modeldate = (str(prev_approval.get("modeldate") or "")).strip()
+        new_modeldate = (str(approval_latest.get("modeldate") or "")).strip()
+
+        approve_changed = bool(prev_approve and new_approve and prev_approve != new_approve)
+        modeldate_changed = bool(prev_modeldate and new_modeldate and prev_modeldate != new_modeldate)
+
+        if approve_changed or modeldate_changed:
             msg = (
-                "📊 Approve data updated!\n\n"
-                f"Previous: {prev_key or '(unknown)'} — {prev_val or '(empty)'}\n"
-                f"Latest: {new_key or '(unknown)'} — {new_val or '(empty)'}\n\n"
+                "📊 Approve / Modeldate updated!\n\n"
+                f"Approve: {prev_approve or '(empty)'} → {new_approve or '(empty)'}\n"
+                f"Modeldate: {prev_modeldate or '(empty)'} → {new_modeldate or '(empty)'}\n\n"
                 f"Source: {APPROVAL_CSV_URL}"
             )
             send_telegram(msg)
-            print("Approve update alert sent.")
+            print("Approve/modeldate update alert sent.")
         else:
-            print("No approve update (or first run).")
+            print("No approve/modeldate update (or first run).")
     else:
-        print("No approve update (or first run / parse failed).")
+        print("No approve/modeldate update (or first run / parse failed).")
 
     return 0
 
