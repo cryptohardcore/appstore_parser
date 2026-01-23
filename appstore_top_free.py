@@ -42,18 +42,34 @@ HEADERS = {
 }
 
 # ======================
-# Fetch helpers
+# Fetch helpers (with debugging)
 # ======================
 def fetch_html(url: str) -> str:
     r = requests.get(url, headers=HEADERS, timeout=30)
+    ct = (r.headers.get("content-type") or "").lower()
+    print(f"[fetch_html] {url} status={r.status_code} content-type={ct}")
     r.raise_for_status()
     return r.text
 
 
 def fetch_text(url: str) -> str:
     r = requests.get(url, headers=HEADERS, timeout=30)
+    ct = (r.headers.get("content-type") or "").lower()
+    print(f"[fetch_text] {url} status={r.status_code} content-type={ct}")
     r.raise_for_status()
-    return r.text
+
+    text = r.text
+    is_html = "text/html" in ct or text.lstrip().lower().startswith("<!doctype") or text.lstrip().lower().startswith("<html")
+
+    if is_html:
+        preview = text[:300].replace("\n", "\\n")
+        print("[fetch_text] ERROR: got HTML instead of CSV. Preview:")
+        print(preview)
+    else:
+        first_line = text.splitlines()[0] if text.splitlines() else ""
+        print("[fetch_text] CSV header:", first_line)
+
+    return text
 
 
 # ======================
@@ -99,7 +115,6 @@ def extract_app_name_from_anchor(a) -> str | None:
         name = title_el.get_text(" ", strip=True)
         return name or None
 
-    # fallback: attempt to parse from anchor text
     text = a.get_text(" ", strip=True)
     text = re.sub(r"\s+", " ", text).strip()
     if not re.match(r"^\d+\s", text):
@@ -202,7 +217,6 @@ def parse_tsa_latest(html: str) -> Dict[str, Any] | None:
         if "date" not in header_text:
             continue
 
-        # usually first data row is "yesterday"
         for r in rows[1:4]:
             cells = [c.get_text(" ", strip=True) for c in r.find_all(["td", "th"])]
             if len(cells) < 2:
@@ -216,7 +230,7 @@ def parse_tsa_latest(html: str) -> Dict[str, Any] | None:
 
 
 # ======================
-# Trump approval parsing (FIXED: single-row, newest at end)
+# Trump approval parsing (single-row, newest at end)
 # ======================
 def _is_html(text: str) -> bool:
     head = text.lstrip()[:200].lower()
@@ -225,11 +239,8 @@ def _is_html(text: str) -> bool:
 
 def parse_latest_trump_approval(csv_text: str) -> Dict[str, Any] | None:
     """
-    Assumption (confirmed): newest update is appended at END of file.
-
-    Rule:
-    - Walk from the end and pick the first row where BOTH approve and modeldate exist.
-    - Read approve + modeldate from the SAME row (prevents mismatches).
+    Assumption: newest update is appended at END of file.
+    Rule: pick the last row (from end) where BOTH approve and modeldate exist.
     """
     if _is_html(csv_text):
         return None
@@ -318,7 +329,7 @@ def main() -> int:
     if tsa_latest:
         save_json(TSA_STATE_PATH, tsa_latest)
     else:
-        print("Failed to parse TSA latest row. Using previous TSA state for heartbeat if available.")
+        print("Failed to parse TSA latest row.")
 
     # Trump approval
     approval_latest = None
@@ -330,7 +341,7 @@ def main() -> int:
     if approval_latest:
         save_json(APPROVAL_STATE_PATH, approval_latest)
     else:
-        print("Failed to parse Trump approval CSV. Using previous state for heartbeat if available.")
+        print("Failed to parse Trump approval CSV (will show unavailable in heartbeat).")
 
     # Save App Store states
     save_json(FREE_STATE_PATH, free_top3)
@@ -341,20 +352,13 @@ def main() -> int:
     last_heartbeat = load_last_heartbeat()
 
     tsa_for_hb = tsa_latest if tsa_latest else prev_tsa
-    approval_for_hb = approval_latest if approval_latest else prev_approval
+    approval_for_hb = approval_latest if approval_latest else {"approve": "(unavailable)", "modeldate": "(unavailable)"}
 
     if last_heartbeat is None or now - last_heartbeat >= HEARTBEAT_INTERVAL:
         # TSA line
-        tsa_line = "(no data yet)"
+        tsa_line = "(unavailable)"
         if isinstance(tsa_for_hb, dict) and tsa_for_hb.get("date") and tsa_for_hb.get("passengers") is not None:
             tsa_line = f"{tsa_for_hb['date']} — {int(tsa_for_hb['passengers']):,} passengers"
-
-        # Trump approval lines
-        approve_val = "(no data)"
-        modeldate_val = "(no data)"
-        if isinstance(approval_for_hb, dict):
-            approve_val = str(approval_for_hb.get("approve") or "(no data)")
-            modeldate_val = str(approval_for_hb.get("modeldate") or "(no data)")
 
         heartbeat = (
             "✅ Monitor health check\n\n"
@@ -366,8 +370,8 @@ def main() -> int:
             "✈️ TSA:\n"
             f"{tsa_line}\n\n"
             "Trump Approval:\n"
-            f"📊 Approve: {approve_val}\n"
-            f"🗓️ Modeldate: {modeldate_val}\n\n"
+            f"📊 Approve: {approval_for_hb.get('approve')}\n"
+            f"🗓️ Modeldate: {approval_for_hb.get('modeldate')}\n\n"
             f"Free: {FREE_URL}\n"
             f"Paid: {PAID_URL}\n"
             f"TSA: {TSA_URL}\n"
