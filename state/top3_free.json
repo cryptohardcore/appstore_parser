@@ -1,14 +1,14 @@
 [
   {
     "rank": 1,
-    "name": "ChatGPT"
-  },
-  {
-    "rank": 2,
     "name": "Claude by Anthropic"
   },
   {
+    "rank": 2,
+    "name": "ChatGPT"
+  },
+  {
     "rank": 3,
-    "name": "Google Gemini"
+    "name": "DICKâS Sporting Goods"
   }
 ]
