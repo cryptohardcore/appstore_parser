@@ -1,14 +1,14 @@
 [
   {
     "rank": 1,
-    "name": "TurboTax: File Your Tax Return"
-  },
-  {
-    "rank": 2,
     "name": "ChatGPT"
   },
   {
-    "rank": 3,
+    "rank": 2,
     "name": "Claude by Anthropic"
+  },
+  {
+    "rank": 3,
+    "name": "Google Gemini"
   }
 ]
