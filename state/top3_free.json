@@ -1,14 +1,14 @@
 [
   {
     "rank": 1,
-    "name": "Peacock TV: Stream TV & Movies"
-  },
-  {
-    "rank": 2,
     "name": "ChatGPT"
   },
   {
-    "rank": 3,
+    "rank": 2,
     "name": "Netflix Game Controller"
+  },
+  {
+    "rank": 3,
+    "name": "Peacock TV: Stream TV & Movies"
   }
 ]
