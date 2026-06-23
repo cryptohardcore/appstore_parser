@@ -1,14 +1,14 @@
 [
   {
     "rank": 1,
-    "name": "ChatGPT"
-  },
-  {
-    "rank": 2,
     "name": "Kalshi: Trade the Cup"
   },
   {
-    "rank": 3,
+    "rank": 2,
     "name": "Peacock TV: Stream TV & Movies"
+  },
+  {
+    "rank": 3,
+    "name": "ChatGPT"
   }
 ]
