@@ -1,14 +1,14 @@
 [
   {
     "rank": 1,
-    "name": "ChatGPT"
-  },
-  {
-    "rank": 2,
     "name": "Muse from Meta"
   },
   {
+    "rank": 2,
+    "name": "ChatGPT"
+  },
+  {
     "rank": 3,
-    "name": "Vinted: Pre-loved marketplace"
+    "name": "Amazon Prime Video"
   }
 ]
